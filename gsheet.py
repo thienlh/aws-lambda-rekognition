@@ -1,7 +1,7 @@
+import datetime
+
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import datetime
-import re
 
 scope = ['https://spreadsheets.google.com/feeds',
          'https://www.googleapis.com/auth/drive']

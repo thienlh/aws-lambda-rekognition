@@ -1,7 +1,7 @@
+import boto3
 import os
 import urllib
-import boto3
-# import pip_utils
+
 import gsheet
 
 SUPPORTED_TYPES = ['image/jpeg', 'image/jpg',
@@ -30,7 +30,7 @@ def recognize_celebrity(image_bytes):
     except Exception as e:
         print(e)
         print('Unable to recognize celebrity.')
-        raise (e)
+        raise e
 
     celebrities = response['CelebrityFaces']
 
@@ -39,8 +39,8 @@ def recognize_celebrity(image_bytes):
 
 
 def lambda_handler(event, context):
-    # pip_utils.install('gspread')
     print('Validating message...')
+
     # Ignore event if verification token presented doesn't match
     if not verify_token(event):
         return
@@ -48,7 +48,7 @@ def lambda_handler(event, context):
     # Respond to Slack event subscription URL verification challenge
     if event.get('challenge') is not None:
         print(
-            'Presented with URL verification challenge- responding accordingly...')
+            'Presented with URL verification challenge - responding accordingly...')
         challenge = event['challenge']
         return {'challenge': challenge}
 
@@ -56,9 +56,9 @@ def lambda_handler(event, context):
     if not validate_event(event):
         return
 
+    # Gather event details
     event_details = event['event']
     file_details = event_details['file']
-
     channel = event_details['channel']
     url = file_details['url_private']
     file_id = file_details['id']
@@ -66,35 +66,21 @@ def lambda_handler(event, context):
     print('Downloading image...')
     image_bytes = download_image(url)
 
-    print('Checking image for explicit content...')
-    is_explicit = detect_explicit_content(image_bytes)
+    detect_explicit(channel, file_id, image_bytes)
 
-    if is_explicit:
-        print(
-            'Image displays explicit content- deleting from Slack Shared Files...')
-        delete_file(file_id)
-        print('Posting message to channel to notify users of file deletion...')
-        post_message(
-            channel, 'Admin',
-            'File removed due to displaying explicit or suggestive adult content.')
-    else:
-        print('No explicit content found.')
+    detect_image_labels(channel, image_bytes)
 
-    print('Checking image to detect content...')
-    labels = detect_labels(image_bytes)
-    gsheet.write_google_sheet(labels)
+    detect_celebrities(channel, image_bytes)
 
-    names = []
+    print('Done')
+    return
 
-    for label in labels:
-        names.append(label.get('Name'))
 
-    post_message(channel, 'Labels', names)
-
+def detect_celebrities(channel, image_bytes):
     print('Checking image to detect celebrity...')
+
     celebrities = recognize_celebrity(image_bytes)
     gsheet.write_google_sheet_celebrity(celebrities)
-
     celeb_names = []
 
     for celeb in celebrities:
@@ -103,8 +89,34 @@ def lambda_handler(event, context):
 
     post_message(channel, 'Celebrities', celeb_names)
 
-    print('Done')
-    return 'Done'
+
+def detect_image_labels(channel, image_bytes):
+    print('Checking image to detect content...')
+
+    labels = detect_labels(image_bytes)
+    gsheet.write_google_sheet(labels)
+    names = []
+
+    for label in labels:
+        names.append(label.get('Name'))
+
+    post_message(channel, 'Labels', names)
+
+
+def detect_explicit(channel, file_id, image_bytes):
+    print('Checking image for explicit content...')
+
+    if detect_explicit_content(image_bytes):
+        print(
+            'Image displays explicit content- deleting from Slack Shared Files...')
+        delete_file(file_id)
+
+        print('Posting message to channel to notify users of file deletion...')
+        post_message(
+            channel, 'Admin',
+            'File removed due to displaying explicit or suggestive adult content.')
+    else:
+        print('No explicit content found.')
 
 
 def verify_token(event):
@@ -120,7 +132,7 @@ def verify_token(event):
 
     """
     if event['token'] != VERIFICATION_TOKEN:
-        print('Presented with invalid token- ignoring message...')
+        print('Presented with invalid token - ignoring message...')
         return False
     return True
 
@@ -198,8 +210,10 @@ def detect_explicit_content(image_bytes):
     except Exception as e:
         print(e)
         print('Unable to detect labels for image.')
-        raise (e)
+        raise e
+
     labels = response['ModerationLabels']
+
     if not labels:
         return False
     return True
@@ -228,7 +242,8 @@ def detect_labels(image_bytes):
     except Exception as e:
         print(e)
         print('Unable to detect labels for image.')
-        raise (e)
+        raise e
+
     labels = response['Labels']
 
     print(labels)
@@ -274,6 +289,7 @@ def post_message(channel, title, content):
             ("text", title + ' -> ' + str(content))
         )
     )
+
     data = data.encode("ascii")
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
     request = urllib.request.Request(url, data, headers)
