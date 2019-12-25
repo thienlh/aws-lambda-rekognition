@@ -1,47 +1,21 @@
-import boto3
 import os
 import urllib
 
 import gsheet
+import rekognition
 
-SUPPORTED_TYPES = ['image/jpeg', 'image/jpg',
-                   'image/png']  # Supported image types
+SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/jpg', 'image/png']
 # Max number of image bytes supported by Amazon Rekognition (5MiB)
 MAX_SIZE = 5242880
-
 # Slack verification token from environment variables
 VERIFICATION_TOKEN = os.environ['VERIFICATION_TOKEN']
 # Slack OAuth access token from environment variables
 ACCESS_TOKEN = os.environ['ACCESS_TOKEN']
 
-# Confidence interval for image moderation
-MIN_CONFIDENCE = float(os.environ['MIN_CONFIDENCE'])
-
-rekognition = boto3.client('rekognition')
-
-
-def recognize_celebrity(image_bytes):
-    try:
-        response = rekognition.recognize_celebrities(
-            Image={
-                'Bytes': image_bytes,
-            }
-        )
-    except Exception as e:
-        print(e)
-        print('Unable to recognize celebrity.')
-        raise e
-
-    celebrities = response['CelebrityFaces']
-
-    print(celebrities)
-    return celebrities
-
 
 def lambda_handler(event, context):
     print('Validating message...')
-
-    # Ignore event if verification token presented doesn't match
+    # Verify token
     if not verify_token(event):
         return
 
@@ -53,7 +27,7 @@ def lambda_handler(event, context):
         return {'challenge': challenge}
 
     # Ignore event if Slack message doesn't contain any supported images
-    if not validate_event(event):
+    if not verify_event(event):
         return
 
     # Gather event details
@@ -62,14 +36,12 @@ def lambda_handler(event, context):
     channel = event_details['channel']
     url = file_details['url_private']
     file_id = file_details['id']
-
     print('Downloading image...')
     image_bytes = download_image(url)
 
+    # Detect
     detect_explicit(channel, file_id, image_bytes)
-
     detect_image_labels(channel, image_bytes)
-
     detect_celebrities(channel, image_bytes)
 
     print('Done')
@@ -78,39 +50,31 @@ def lambda_handler(event, context):
 
 def detect_celebrities(channel, image_bytes):
     print('Checking image to detect celebrity...')
-
-    celebrities = recognize_celebrity(image_bytes)
-    gsheet.write_google_sheet_celebrity(celebrities)
+    celebrities = rekognition.recognize_celebrity(image_bytes)
+    gsheet.write_celebrities(celebrities)
     celeb_names = []
-
     for celeb in celebrities:
         celeb_names.append(
             celeb.get('Name') + ' (' + str(celeb.get('MatchConfidence')) + '%)')
-
     post_message(channel, 'Celebrities', celeb_names)
 
 
 def detect_image_labels(channel, image_bytes):
     print('Checking image to detect content...')
-
-    labels = detect_labels(image_bytes)
-    gsheet.write_google_sheet(labels)
+    labels = rekognition.detect_labels(image_bytes)
+    gsheet.write_labels(labels)
     names = []
-
     for label in labels:
         names.append(label.get('Name'))
-
     post_message(channel, 'Labels', names)
 
 
 def detect_explicit(channel, file_id, image_bytes):
     print('Checking image for explicit content...')
-
-    if detect_explicit_content(image_bytes):
+    if rekognition.detect_explicit_content(image_bytes):
         print(
             'Image displays explicit content- deleting from Slack Shared Files...')
         delete_file(file_id)
-
         print('Posting message to channel to notify users of file deletion...')
         post_message(
             channel, 'Admin',
@@ -137,7 +101,7 @@ def verify_token(event):
     return True
 
 
-def validate_event(event):
+def verify_event(event):
     """ Validates event by checking contained Slack message for image of supported type and size.
 
     Args:
@@ -159,7 +123,7 @@ def validate_event(event):
     mime_type = file_details['mimetype']
     file_size = file_details['size']
 
-    if mime_type not in SUPPORTED_TYPES:
+    if mime_type not in SUPPORTED_IMAGE_FORMATS:
         print('File is not an image- ignoring event...')
         return False
 
@@ -186,68 +150,6 @@ def download_image(url):
     request = urllib.request.Request(
         url, headers={'Authorization': 'Bearer %s' % ACCESS_TOKEN})
     return urllib.request.urlopen(request).read()
-
-
-def detect_explicit_content(image_bytes):
-    """ Checks image for explicit or suggestive content using Amazon Rekognition Image Moderation.
-
-    Args:
-        image_bytes (bytes): Blob of image bytes.
-
-    Returns:
-        (boolean)
-        True if Image Moderation detects explicit or suggestive content in blob of image bytes.
-        False otherwise.
-
-    """
-    try:
-        response = rekognition.detect_moderation_labels(
-            Image={
-                'Bytes': image_bytes,
-            },
-            MinConfidence=MIN_CONFIDENCE
-        )
-    except Exception as e:
-        print(e)
-        print('Unable to detect labels for image.')
-        raise e
-
-    labels = response['ModerationLabels']
-
-    if not labels:
-        return False
-    return True
-
-
-def detect_labels(image_bytes):
-    """ Checks image for explicit or suggestive content using Amazon Rekognition Image Moderation.
-
-    Args:
-        image_bytes (bytes): Blob of image bytes.
-
-    Returns:
-        (boolean)
-        True if Image Moderation detects explicit or suggestive content in blob of image bytes.
-        False otherwise.
-
-    """
-    try:
-        response = rekognition.detect_labels(
-            Image={
-                'Bytes': image_bytes,
-            },
-            MinConfidence=MIN_CONFIDENCE,
-            MaxLabels=10,
-        )
-    except Exception as e:
-        print(e)
-        print('Unable to detect labels for image.')
-        raise e
-
-    labels = response['Labels']
-
-    print(labels)
-    return labels
 
 
 def delete_file(file_id):
